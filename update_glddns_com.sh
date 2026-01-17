@@ -18,9 +18,10 @@
 #   device_sn_bak = "Factory", "0x4020";
 # };
 
-local __BOARD __BOARD_DATA __PARTITION_NAME
+# This script sets global variables for caching:
+# URL_USER URL_PASS GLDDNS_DOMAIN GLDDNS_CERT
+local __BOARD __BOARD_DATA __PARTITION_NAME __URL
 local __USER_OFFSET __PASS_OFFSET __DOMAIN_OFFSET __CERT_OFFSET
-local __USER __PASS __DOMAIN __CERT __URL
 
 # Board data that is in the OEM device tree, but isn't in the OpenWRT one so we
 # hard code them here.  Use "_" to skip cert.
@@ -28,7 +29,6 @@ local __USER __PASS __DOMAIN __CERT __URL
 #   GL-B2200                 Info not found in device tree
 #   GL-MV1000                Info not found in device tree
 #   GL-S1300                 Info not found in device tree
-#   GL-BE3600                Could not extract device tree
 #   All MIPS-based routers   No device tree available
 local __BOARD_DATA_LIST='
 BOARD              PARTITION         MAC    SN     DDNS   CERT
@@ -38,6 +38,7 @@ glinet,gl-ax1800   0:ART             0x0    0x40   0x20   _
 glinet,gl-axt1800  0:ART             0x0    0x40   0x20   _
 glinet,gl-b1300    ART               0x0    0x30   0x10   _
 glinet,gl-b3000    0:ART             0x6    0x30   0x10   0x50000
+glinet,gl-be3600   0:ART             0x6    0x30   0x10   0x50000
 glinet,gl-be6500   0:ART             0x0a   0x30   0x10   0x80000
 glinet,gl-be9300   /dev/mmcblk0p8    0x0a   0x30   0x10   0x80000
 glinet,gl-mt2500   /dev/mmcblk0boot1 0x0a   0x30   0x10   _
@@ -49,55 +50,58 @@ glinet,gl-x2000    0:ART             0x6    0x30   0x10   0x50000
 glinet,gl-x3000    /dev/mmcblk0p3    0x0a   0x30   0x10   0x1000
 glinet,gl-xe3000   /dev/mmcblk0p3    0x0a   0x30   0x10   0x1000
 '
-read -r __BOARD < <(ubus call system board | jsonfilter -e '@.board_name')
-while read -r __BOARD_DATA __PARTITION_NAME __USER_OFFSET __PASS_OFFSET __DOMAIN_OFFSET __CERT_OFFSET ; do
-  if [ "$__BOARD_DATA" == "$__BOARD" ]; then
-    break
+
+if [ -z "${GLDDNS_DMAIN:-}" ]; then
+  read -r __BOARD < <(ubus call system board | jsonfilter -e '@.board_name')
+  while read -r __BOARD_DATA __PARTITION_NAME __USER_OFFSET __PASS_OFFSET __DOMAIN_OFFSET __CERT_OFFSET ; do
+    if [ "$__BOARD_DATA" == "$__BOARD" ]; then
+      break
+    fi
+  done < <(echo "$__BOARD_DATA_LIST")
+  if [ "$__BOARD_DATA" != "$__BOARD" ]; then
+    write_log 13 "Error: Device $__BOARD is not supported"
   fi
-done < <(echo "$__BOARD_DATA_LIST")
-if [ "$__BOARD_DATA" != "$__BOARD" ]; then
-  write_log 13 "Error: Device $__BOARD is not supported"
+
+  # Locate the correct partition
+  local __PARTITION __PARTITION_NAME_CURRENT __PARTITION_NAME_PATH
+  case "$__PARTITION_NAME" in
+    /dev/mmc*)
+      __PARTITION=$__PARTITION_NAME
+      ;;
+    *)
+      # Search by mtd name
+      for __PARITION_NAME_PATH in /sys/class/mtd/mtd*/name; do
+        read -r __PARTITION_NAME_CURRENT < "$__PARITION_NAME_PATH"
+        if [ "$__PARTITION_NAME" == "$__PARTITION_NAME_CURRENT" ]; then
+          __PARTITION=${__PARITION_NAME_PATH%/name}
+          __PARTITION=/dev/mtdblock${__PARTITION#/sys/class/mtd/mtd}
+          break
+        fi
+      done
+      ;;
+  esac
+
+  if [ -z "$__PARTITION" ] || [ ! -r "$__PARTITION" ]; then
+    write_log 13 "Error: Could not find parition $__PARTITION_NAME"
+  fi
+
+  # Read the variables
+  read -r       URL_USER      < <(dd if="$__PARTITION" bs=4k iflag=count_bytes,skip_bytes skip="$((__USER_OFFSET))"   count=6 | hexdump -e '6/1 "%02x"')
+  read -r -d '' URL_PASS      < <(dd if="$__PARTITION" bs=4k iflag=count_bytes,skip_bytes skip="$((__PASS_OFFSET))"   count=16)
+  read -r -d '' GLDDNS_DOMAIN < <(dd if="$__PARTITION" bs=4k iflag=count_bytes,skip_bytes skip="$((__DOMAIN_OFFSET))" count=16)
+  if [ "$__CERT_OFFSET" != "_" ]; then
+    read -r -d '' GLDDNS_CERT < <(dd if="$__PARTITION" bs=4k iflag=count_bytes,skip_bytes skip="$((__CERT_OFFSET))"   count=4096)
+  fi
 fi
 
-# Locate the correct partition
-local __PARTITION __PARTITION_NAME_CURRENT __PARTITION_NAME_PATH
-case "$__PARTITION_NAME" in
-  /dev/mmc*)
-    __PARTITION=$__PARTITION_NAME
-    ;;
-  *)
-    # Search by mtd name
-    for __PARITION_NAME_PATH in /sys/class/mtd/mtd*/name; do
-      read -r __PARTITION_NAME_CURRENT < "$__PARITION_NAME_PATH"
-      if [ "$__PARTITION_NAME" == "$__PARTITION_NAME_CURRENT" ]; then
-        __PARTITION=${__PARITION_NAME_PATH%/name}
-        __PARTITION=/dev/mtdblock${__PARTITION#/sys/class/mtd/mtd}
-        break
-      fi
-    done
-    ;;
-esac
-
-if [ -z "$__PARTITION" ] || [ ! -r "$__PARTITION" ]; then
-  write_log 13 "Error: Could not find parition $__PARTITION_NAME"
-fi
-
-# Read the variables
-read -r       __USER   < <(dd if="$__PARTITION" bs=4k iflag=count_bytes,skip_bytes skip="$((__USER_OFFSET))"   count=6 | hexdump -e '6/1 "%02x"')
-read -r -d '' __PASS   < <(dd if="$__PARTITION" bs=4k iflag=count_bytes,skip_bytes skip="$((__PASS_OFFSET))"   count=16)
-read -r -d '' __DOMAIN < <(dd if="$__PARTITION" bs=4k iflag=count_bytes,skip_bytes skip="$((__DOMAIN_OFFSET))" count=16)
-if [ "$__CERT_OFFSET" != "_" ]; then
-  read -r -d '' __CERT < <(dd if="$__PARTITION" bs=4k iflag=count_bytes,skip_bytes skip="$((__CERT_OFFSET))"   count=4096)
-fi
-
-[ -z "$__USER" ] && write_log 13 "Error: could not read user name (mac address)"
-[ -z "$__PASS" ] && write_log 13 "Error: could not read password (serial number)"
-[ -z "$__DOMAIN" ] && write_log 13 "Error: could not read DDNS domain"
+[ -z "$URL_USER" ] && write_log 13 "Error: could not read user name (mac address)"
+[ -z "$URL_PASS" ] && write_log 13 "Error: could not read password (serial number)"
+[ -z "$GLDDNS_DOMAIN" ] && write_log 13 "Error: could not read DDNS domain"
 [ -z "$CURL" ] && write_log 13 "Error: curl is required"
 [ -z "$CURL_SSL" ] && write_log 13 "cURL: libcurl compiled without https support"
 
 # Determine curl arguments, copied from dynamic_dns_functions.sh
-local __PROG="$CURL -RsS -o $DATFILE --stderr $ERRFILE --user ${__USER}:${__PASS}"
+local __PROG="$CURL -RsS -o $DATFILE --stderr $ERRFILE --user ${URL_USER}:${URL_PASS}"
 
 # force network/interface-device to use for communication
 if [ -n "$bind_network" ]; then
@@ -119,19 +123,15 @@ elif [ -z "$CURL_PROXY" ]; then
   write_log 13 "cURL: libcurl compiled without Proxy support"
 fi
 
-# Override URL_PASS so it gets censored in the log
-# shellcheck disable=SC2034 # Used in write_log
-URL_PASS=$__PASS
-
-local __ERR __URL="https://ddns.glddns.com/nic/update?hostname=$__DOMAIN&myip=$__IP"
+local __ERR __URL="https://ddns.glddns.com/nic/update?hostname=$GLDDNS_DOMAIN&myip=$__IP"
 local __RUNPROG="$__PROG '$__URL' 2>$ERRFILE"
 local __CNT=0
 
 while : ; do
-  case "$__CERT" in
+  case "$GLDDNS_CERT" in
     *"-----BEGIN PRIVATE KEY-----"*)
-      local __KEY="-----BEGIN PRIVATE KEY-----${__CERT##*-----BEGIN PRIVATE KEY-----}"
-      __CERT="${__CERT%%-----BEGIN PRIVATE KEY-----*}"
+      local __KEY="-----BEGIN PRIVATE KEY-----${GLDDNS_CERT##*-----BEGIN PRIVATE KEY-----}"
+      local __CERT="${GLDDNS_CERT%%-----BEGIN PRIVATE KEY-----*}"
 
       write_log 7 "#> $__RUNPROG --cert ... --key ..."
       eval "$__RUNPROG" --cert <(echo "$__CERT") --key <(echo "$__KEY")
