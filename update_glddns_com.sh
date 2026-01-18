@@ -51,7 +51,7 @@ glinet,gl-x3000    /dev/mmcblk0p3    0x0a   0x30   0x10   0x1000
 glinet,gl-xe3000   /dev/mmcblk0p3    0x0a   0x30   0x10   0x1000
 '
 
-if [ -z "${GLDDNS_DMAIN:-}" ]; then
+if [ -z "${GLDDNS_DOMAIN:-}" ]; then
   read -r __BOARD < <(ubus call system board | jsonfilter -e '@.board_name')
   while read -r __BOARD_DATA __PARTITION_NAME __USER_OFFSET __PASS_OFFSET __DOMAIN_OFFSET __CERT_OFFSET ; do
     if [ "$__BOARD_DATA" == "$__BOARD" ]; then
