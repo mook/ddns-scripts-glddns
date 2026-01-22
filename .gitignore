@@ -1,1 +1,3 @@
+*.apk
 *.ipk
+/packaging/key.asc
