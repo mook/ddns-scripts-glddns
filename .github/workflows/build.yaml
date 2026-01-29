@@ -15,6 +15,7 @@ jobs:
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
+        fetch-tags: true
         persist-credentials: false
     - run: >-
         printf "SOURCE_DATE_EPOCH=%s\n"
@@ -23,7 +24,11 @@ jobs:
     - uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
       env:
         DOCKER_BUILD_RECORD_UPLOAD: 'false'
+        SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
       with:
+        context: .
+        build-args: |
+          GIT_TAG=${{ github.event.release.tag_name || case(github.ref_type == 'tag', github.ref_name, '') }}
         outputs: type=local,dest=.
     - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
       with:
@@ -71,19 +76,17 @@ jobs:
     - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
       with:
         name: artifact
-    - name: Write out key
-      run: |
-        echo "KEYFILE=$PWD/key.asc" >> "$GITHUB_ENV"
-        cat > key.asc <<EOF
-        $KEY
-        EOF
-      env:
-        KEY: ${{ secrets.PUBLISH_KEY }}
+        path: packaging/
     - name: Build repository
-      uses: docker://alpine:edge
+      uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+      env:
+        DOCKER_BUILD_RECORD_UPLOAD: 'false'
       with:
-        args: /bin/sh -c "apk add -U gpg gpg-agent && packaging/publish.sh"
-    - run: rm -f "$KEYFILE"
+        context: packaging/
+        file: packaging/publish.Dockerfile
+        secrets: |
+          "publish_key=${{ secrets.PUBLISH_KEY }}"
+        outputs: type=local,dest=out/
     - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
     - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
       with:

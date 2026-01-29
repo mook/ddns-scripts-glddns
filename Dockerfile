@@ -1,6 +1,7 @@
 # We need alpine:edge for apk v3.
 
 FROM alpine:edge AS ipk-builder
+ARG GIT_TAG=
 RUN apk add -U tar
 WORKDIR /src
 ADD packaging/ipk ./
