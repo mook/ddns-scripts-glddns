@@ -49,6 +49,7 @@ cat >>"${OUT_DIR}/Packages" <<EOF
 Filename: ${NAME}_${VERSION}_${ARCHITECTURE}.ipk
 Size: $(stat -c %s "${IPK}")
 SHA256sum: $(sha256sum "${IPK}" | cut -d ' ' -f 1)
+
 EOF
 gzip -k "${OUT_DIR}/Packages"
 
@@ -60,14 +61,13 @@ sq sign --signature-file "${OUT_DIR}/packages.adb.asc" --signer "${keyid}" "${OU
 
 # Sign with OpenWRT usign.  This is somewhat confusing because we convert the
 # GPG key for use with usign.
-sq packet split --output-prefix=key-parts "${KEYFILE}"
-
 dump_key() { # <Heading>
-  sq packet dump --mpis key-parts-*-Secret-Key-* \
+  sq packet dump --mpis "${KEYFILE}" \
     | awk "
-        BEGIN { p = 0 }
-        /${1}/ { p = 1 }
-        /^\s+\d{8,}/ { if (p) { \$1 = \$1 \":\" ; print } }
+        BEGIN { p = 0 ; q = 0 }
+        /${1}/ { p = 1 ; next }
+        /^\s+\d{8,}/ { if (p && !q ) { \$1 = \$1 \":\" ; print } }
+        /[A-Za-z]:\$/ { if (p) { q = 1 } }
       " \
     | { xxd -r 2>/dev/null || true ; } \
     | xxd -p -c9999
@@ -76,8 +76,8 @@ dump_key() { # <Heading>
 # secret and public keys, as hexdumps
 secret=$(dump_key "Secret Key:")
 public=$(dump_key "Public Key:" | tail -c+3)
-salt=$(head -c16 /dev/urandom | xxd -p -c9999)
-fingerprint=$(head -c8 /dev/urandom | xxd -p -c9999)
+fingerprint=$(dump_key "Signature:" | head -c16)
+salt=$(dump_key "Signature:" | tail -c+17 | head -c32)
 checksum=$(echo "${secret}${public}" | xxd -r -p | sha512sum -b | head -c16)
 
 echo "untrusted comment: private key ${fingerprint}" > usign.key
@@ -90,20 +90,20 @@ ${secret}
 ${public}
 EOF
 
-echo "untrusted comment: public key ${fingerprint}" > usign.pub
-sed 's@#.*@@' <<EOF | xxd -r -p | base64 -w0 >> usign.pub
+echo "untrusted comment: public key ${fingerprint}" > "${OUT_DIR}/usign.pub"
+sed 's@#.*@@' <<EOF | xxd -r -p | base64 -w0 >> "${OUT_DIR}/usign.pub"
 45 64 # pkalg="Ed"
 ${fingerprint}
 ${public}
 EOF
-echo >> usign.pub
+echo >> "${OUT_DIR}/usign.pub"
 
 cat >>"${GITHUB_STEP_SUMMARY:-/dev/stdout}" <<"EOF"
 ## OpenWRT signing key:
 ```
 EOF
-cat usign.pub
+cat "${OUT_DIR}/usign.pub"
 echo '```' >>"${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 
 usign -S -m "${OUT_DIR}/Packages" -s usign.key
-usign -V -m "${OUT_DIR}/Packages" -p usign.pub
+usign -V -m "${OUT_DIR}/Packages" -p "${OUT_DIR}/usign.pub"
